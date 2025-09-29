@@ -98,61 +98,71 @@ export const registerUser = async (req, res) => {
 };
 
 // ================= LOGIN USER =================
+// ================= LOGIN USER (FIXED FOR NO BCRYPT) =================
 export const loginUser = async (req, res) => {
-  const { email, password } = req.body;
+    const { email, password } = req.body;
 
-  if (!email || !password) {
-    return res.status(400).json({ message: 'Email and password are required.' });
-  }
+    if (!email || !password) {
+        return res.status(400).json({ message: 'Email and password are required.' });
+    }
 
-  // Look for the user in the new User model
-  const user = await User.findOne({ email });
-  if (!user) {
-      // If not in the User model, check the BasicUser model
-      const basicUser = await BasicUser.findOne({ email });
-      if (!basicUser) {
-          return res.status(400).json({ message: 'Invalid email or password.' });
-      }
-      
-      // If they are a BasicUser, check password and return a token for the BasicUser
-      const isMatch = await bcrypt.compare(password, basicUser.password);
-      if (!isMatch) return res.status(400).json({ message: 'Invalid email or password.' });
+    // Look for the user in the new User model
+    const user = await User.findOne({ email });
+    
+    if (!user) {
+        // If not in the User model, check the BasicUser model
+        const basicUser = await BasicUser.findOne({ email });
+        
+        if (!basicUser) {
+            return res.status(400).json({ message: 'Invalid email or password.' });
+        }
+        
+        // --- TEMPORARY FIX: Direct String Comparison for BasicUser ---
+        // NOTE: This is NOT secure and must be replaced with bcrypt.compare(password, basicUser.password)
+        if (password !== basicUser.password) {
+            return res.status(400).json({ message: 'Invalid email or password.' });
+        }
+        // --- END OF TEMPORARY FIX ---
 
-      const token = generateToken(basicUser._id);
-      res.cookie('token', token, {
+        const token = generateToken(basicUser._id);
+        res.cookie('token', token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'Strict',
+            maxAge: 7 * 24 * 60 * 60 * 1000
+        });
+        return res.status(200).json({
+            success: true,
+            message: 'Login successful',
+            user: { id: basicUser._id, fullname: basicUser.full_name, email: basicUser.email }
+        });
+    }
+
+    // --- TEMPORARY FIX: Direct String Comparison for Full User ---
+    // NOTE: This is NOT secure and must be replaced with bcrypt.compare(password, user.password)
+    if (password !== user.password) {
+        return res.status(400).json({ message: 'Invalid email or password.' });
+    }
+    // --- END OF TEMPORARY FIX ---
+
+    const token = generateToken(user._id);
+
+    res.cookie('token', token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'Strict',
         maxAge: 7 * 24 * 60 * 60 * 1000
-      });
-      return res.status(200).json({
-          success: true,
-          message: 'Login successful',
-          user: { id: basicUser._id, fullname: basicUser.full_name, email: basicUser.email }
-      });
-  }
+    });
 
-  const isMatch = await bcrypt.compare(password, user.password);
-  if (!isMatch) return res.status(400).json({ message: 'Invalid email or password.' });
-
-  const token = generateToken(user._id);
-
-  res.cookie('token', token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'Strict',
-    maxAge: 7 * 24 * 60 * 60 * 1000
-  });
-
-  res.status(200).json({
-    success: true,
-    message: 'Login successful',
-    user: {
-      id: user._id,
-      fullname: `${user.f_name} ${user.m_name || ''} ${user.l_name}`.trim(),
-      email: user.email
-    }
-  });
+    res.status(200).json({
+        success: true,
+        message: 'Login successful',
+        user: {
+            id: user._id,
+            fullname: `${user.f_name} ${user.m_name || ''} ${user.l_name}`.trim(),
+            email: user.email
+        }
+    });
 };
 
 // ================= LOGOUT USER =================

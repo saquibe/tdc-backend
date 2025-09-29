@@ -119,6 +119,7 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import BasicUser from '../models/BasicUser.js';
+import User from '../models/User.js'; 
 
 // Generate JWT token
 const generateToken = (id) => {
@@ -167,20 +168,40 @@ export const signupBasic = async (req, res) => {
 };
 
 // ---------------- Login ----------------
+// Ensure you have all necessary imports at the top of the file
+// import jwt from 'jsonwebtoken';
+// import BasicUser from '../models/BasicUser.js'; 
+// import User from '../models/User.js'; 
+// const generateToken = (id) => { /* ... */ };
+
 export const loginBasic = async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        if (!email || !password ) {
+        if (!email || !password) {
             return res.status(400).json({ error: 'Email and password are required.' });
         }
 
-        const user = await BasicUser.findOne({ email });
-        if (!user) return res.status(400).json({ error: 'Invalid email or password.' });
+        // --- PHASE 1: Search the BasicUser Collection ---
+        let user = await BasicUser.findOne({ email });
 
-        // Using direct password comparison for now as per your request
-        if (password !== user.password) return res.status(400).json({ error: 'Invalid email or password.' });
+        if (!user) {
+            // --- PHASE 2: Search the final User Collection (Fallback for Upgraded Users) ---
+            user = await User.findOne({ email });
+        }
 
+        // --- PHASE 3: Handle Not Found ---
+        if (!user) {
+            return res.status(400).json({ error: 'Invalid email or password.' });
+        }
+        
+        // --- PHASE 4: Password Check (TEMPORARY DIRECT COMPARISON) ---
+        // ⚠️ REMEMBER TO REPLACE THIS WITH bcrypt.compare() LATER ⚠️
+        if (password !== user.password) { 
+            return res.status(400).json({ error: 'Invalid email or password.' });
+        }
+        
+        // --- PHASE 5: Successful Login Response ---
         const token = generateToken(user._id);
 
         res.status(200).json({
@@ -189,9 +210,10 @@ export const loginBasic = async (req, res) => {
             token,
             user: {
                 id: user._id,
-                full_name: user.full_name,
+                // The name fields are conditional depending on the model found
+                full_name: user.full_name || `${user.f_name} ${user.m_name || ''} ${user.l_name}`.trim(),
                 email: user.email,
-                mobile_number: user.mobile_number, // Added mobile number
+                mobile_number: user.mobile_number,
             },
         });
     } catch (error) {

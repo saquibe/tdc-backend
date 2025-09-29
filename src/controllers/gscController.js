@@ -83,78 +83,72 @@ export const applyGSC = async (req, res) => {
 
 // ====== UPDATE EXISTING GSC APPLICATION ======
 export const updateGSC = async (req, res) => {
-    try {
-        const { applicationNo } = req.params;
-        const { postal_address } = req.cleanedFormData;
-        const userId = req.user._id;
+  try {
+    const { applicationNo } = req.params;
+    const userId = req.user._id;
 
-        if (!postal_address) {
-            return res.status(400).json({ error: 'Postal address is required' });
-        }
-
-        // Find existing GSC record for this user and applicationNo
-        const existingGsc = await GSC.findOne({ user_id: userId, applicationNo });
-        if (!existingGsc) {
-            return res.status(404).json({ success: false, error: 'Application not found or unauthorized' });
-        }
-
-        // Upload new files if present
-        const savedFiles = await handleFileUpload(req);
-
-        // List all file fields to check
-        const fileFields = [
-            'tdc_reg_certificate_upload',
-            'testimonial_d1_upload',
-            'testimonial_d2_upload',
-            'aadhaar_upload',
-            'tdc_reg_d1_upload',
-            'tdc_reg_d2_upload'
-        ];
-
-        // For each file field, if no new file uploaded, retain old URL
-        fileFields.forEach(field => {
-            if (!savedFiles[field]) {
-                savedFiles[field] = existingGsc[field];
-            }
-        });
-
-        // Construct user name from req.user info
-        let userName;
-        if (req.user.full_name) {
-            userName = req.user.full_name;
-        } else {
-            userName = `${req.user.f_name || ''} ${req.user.m_name || ''} ${req.user.l_name || ''}`.trim();
-        }
-
-        // Prepare the update data merging form data, files, and user name
-        const updateData = {
-            ...req.cleanedFormData,
-            ...savedFiles,
-            name: userName,
-            status: 'Pending'
-        };
-
-        // Update the record and return the new one
-        const updatedGsc = await GSC.findOneAndUpdate(
-            { user_id: userId, applicationNo },
-            updateData,
-            { new: true, runValidators: true }
-        );
-
-        if (!updatedGsc) {
-            return res.status(404).json({ success: false, error: 'Application not found or unauthorized' });
-        }
-
-        // Add applicationDate to the response
-        const updatedGscObj = updatedGsc.toObject();
-        updatedGscObj.applicationDate = updatedGsc.updatedAt && updatedGsc.updatedAt > updatedGsc.createdAt ? updatedGsc.updatedAt : updatedGsc.createdAt;
-
-        res.status(200).json({ success: true, message: 'GSC updated successfully', data: updatedGscObj });
-    } catch (error) {
-        console.error('GSC Update Error:', error);
-        res.status(500).json({ success: false, error: error.message });
+    // Find existing GSC record for this user and applicationNo
+    const existingGsc = await GSC.findOne({ user_id: userId, applicationNo });
+    if (!existingGsc) {
+      return res.status(404).json({ success: false, error: 'Application not found or unauthorized' });
     }
+
+    // Upload only the new files
+    const savedFiles = await handleFileUpload(req);
+
+    // Merge file fields: keep old ones if not replaced
+    const fileFields = [
+      'tdc_reg_certificate_upload',
+      'testimonial_d1_upload',
+      'testimonial_d2_upload',
+      'aadhaar_upload',
+      'tdc_reg_d1_upload',
+      'tdc_reg_d2_upload'
+    ];
+
+    const finalFiles = {};
+    fileFields.forEach(field => {
+      finalFiles[field] = savedFiles[field] || existingGsc[field];
+    });
+
+    // Merge text fields: keep old values unless updated
+    const finalFields = {
+      postal_address: req.cleanedFormData.postal_address || existingGsc.postal_address
+    };
+
+    // Construct user name
+    const userName = req.user.full_name
+      ? req.user.full_name
+      : `${req.user.f_name || ''} ${req.user.m_name || ''} ${req.user.l_name || ''}`.trim();
+
+    // Final merged update
+    const updateData = {
+      ...finalFields,
+      ...finalFiles,
+      name: userName
+      // ⚠️ Don’t reset status unless you want every update to force "Pending"
+    };
+
+    // Update the record
+    const updatedGsc = await GSC.findOneAndUpdate(
+      { user_id: userId, applicationNo },
+      updateData,
+      { new: true, runValidators: true }
+    );
+
+    const updatedGscObj = updatedGsc.toObject();
+    updatedGscObj.applicationDate =
+      updatedGsc.updatedAt && updatedGsc.updatedAt > updatedGsc.createdAt
+        ? updatedGsc.updatedAt
+        : updatedGsc.createdAt;
+
+    res.status(200).json({ success: true, message: 'GSC updated successfully', data: updatedGscObj });
+  } catch (error) {
+    console.error('GSC Update Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
 };
+
 
 // ====== GET GSC ======
 export const getGSC = async (req, res) => {
