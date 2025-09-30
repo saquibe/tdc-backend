@@ -5,6 +5,10 @@ import { fileURLToPath } from 'url';
 import GSC from '../models/GSC.js';
 import { uploadBufferToCloudinary } from '../utils/uploadToCloudinary.js';
 
+// --- Imports for User/BasicUser are assumed to be present ---
+// import User from '../models/User.js'; 
+// import BasicUser from '../models/BasicUser.js'; 
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -17,6 +21,7 @@ const generateApplicationNumber = async () => {
 
 // Common file upload logic
 const handleFileUpload = async (req) => {
+    // CRITICAL FIX: The name construction logic is handled here for consistency
     const name = req.user.full_name || `${req.user.f_name || ''} ${req.user.m_name || ''} ${req.user.l_name || ''}`;
     const safeName = name.trim().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
     
@@ -52,27 +57,22 @@ export const applyGSC = async (req, res) => {
         const savedFiles = await handleFileUpload(req);
         const newApplicationNo = await generateApplicationNumber();
         
-        let userName;
-        if (req.user.full_name) {
-             userName = req.user.full_name;
-        } else {
-             userName = `${req.user.f_name || ''} ${req.user.m_name || ''} ${req.user.l_name || ''}`.trim();
-        }
+        // Construct the name based on the available fields (guaranteed by protectRegisteredUser)
+        const userName = req.user.full_name || `${req.user.f_name || ''} ${req.user.m_name || ''} ${req.user.l_name || ''}`.trim();
         
         const gsc = new GSC({
             user_id: userId,
             postal_address,
             applicationNo: newApplicationNo,
-            name: userName,
-            status: 'Pending',
+            name: userName, 
+            status: 'Pending', // New applications start as Pending
             ...savedFiles
         });
 
         await gsc.save();
 
-        // Convert to object to add applicationDate from timestamps
         const gscObj = gsc.toObject();
-        gscObj.applicationDate = gsc.updatedAt && gsc.updatedAt > gsc.createdAt ? gsc.updatedAt : gsc.createdAt;
+        gscObj.applicationDate = gsc.updatedAt || gsc.createdAt; // Use createdAt for new record
 
         res.status(201).json({ success: true, message: 'GSC submitted successfully', data: gscObj });
     } catch (error) {
@@ -83,70 +83,57 @@ export const applyGSC = async (req, res) => {
 
 // ====== UPDATE EXISTING GSC APPLICATION ======
 export const updateGSC = async (req, res) => {
-  try {
-    const { applicationNo } = req.params;
-    const userId = req.user._id;
+    try {
+        const { applicationNo } = req.params;
+        const { postal_address } = req.cleanedFormData;
+        const userId = req.user._id;
 
-    // Find existing GSC record for this user and applicationNo
-    const existingGsc = await GSC.findOne({ user_id: userId, applicationNo });
-    if (!existingGsc) {
-      return res.status(404).json({ success: false, error: 'Application not found or unauthorized' });
+        // 1. Find existing GSC record for partial update logic
+        const existingGsc = await GSC.findOne({ user_id: userId, applicationNo });
+        if (!existingGsc) {
+            return res.status(404).json({ success: false, error: 'Application not found or unauthorized' });
+        }
+
+        // 2. Validate essential text fields
+        if (!postal_address) {
+            return res.status(400).json({ error: 'Postal address is required' });
+        }
+        
+        // 3. Upload only the new files (req.fileBufferMap only contains newly uploaded files)
+        const savedFiles = await handleFileUpload(req);
+        
+        // 4. MERGE LOGIC: Combine old file URLs with newly uploaded URLs
+        const updateData = {
+            // Text fields: Use new value, or fallback to existing value if new value is empty
+            postal_address: req.cleanedFormData.postal_address || existingGsc.postal_address,
+            // User Name: Must be re-calculated from the current User document
+            name: req.user.full_name || `${req.user.f_name || ''} ${req.user.m_name || ''} ${req.user.l_name || ''}`.trim(),
+            status: 'Pending', // Force status back to Pending on resubmission
+
+            // File Fields: Loop through model fields, use new URL if uploaded, otherwise use old URL
+            tdc_reg_certificate_upload: savedFiles.tdc_reg_certificate_upload || existingGsc.tdc_reg_certificate_upload,
+            testimonial_d1_upload: savedFiles.testimonial_d1_upload || existingGsc.testimonial_d1_upload,
+            testimonial_d2_upload: savedFiles.testimonial_d2_upload || existingGsc.testimonial_d2_upload,
+            aadhaar_upload: savedFiles.aadhaar_upload || existingGsc.aadhaar_upload,
+            tdc_reg_d1_upload: savedFiles.tdc_reg_d1_upload || existingGsc.tdc_reg_d1_upload,
+            tdc_reg_d2_upload: savedFiles.tdc_reg_d2_upload || existingGsc.tdc_reg_d2_upload,
+        };
+
+        // 5. Update the record
+        const updatedGsc = await GSC.findOneAndUpdate(
+            { user_id: userId, applicationNo },
+            { $set: updateData }, // Use $set to update fields
+            { new: true, runValidators: true }
+        );
+
+        const updatedGscObj = updatedGsc.toObject();
+        updatedGscObj.applicationDate = updatedGsc.updatedAt || updatedGsc.createdAt;
+        
+        res.status(200).json({ success: true, message: 'GSC updated successfully', data: updatedGscObj });
+    } catch (error) {
+        console.error('GSC Update Error:', error);
+        res.status(500).json({ success: false, error: error.message });
     }
-
-    // Upload only the new files
-    const savedFiles = await handleFileUpload(req);
-
-    // Merge file fields: keep old ones if not replaced
-    const fileFields = [
-      'tdc_reg_certificate_upload',
-      'testimonial_d1_upload',
-      'testimonial_d2_upload',
-      'aadhaar_upload',
-      'tdc_reg_d1_upload',
-      'tdc_reg_d2_upload'
-    ];
-
-    const finalFiles = {};
-    fileFields.forEach(field => {
-      finalFiles[field] = savedFiles[field] || existingGsc[field];
-    });
-
-    // Merge text fields: keep old values unless updated
-    const finalFields = {
-      postal_address: req.cleanedFormData.postal_address || existingGsc.postal_address
-    };
-
-    // Construct user name
-    const userName = req.user.full_name
-      ? req.user.full_name
-      : `${req.user.f_name || ''} ${req.user.m_name || ''} ${req.user.l_name || ''}`.trim();
-
-    // Final merged update
-    const updateData = {
-      ...finalFields,
-      ...finalFiles,
-      name: userName
-      // ⚠️ Don’t reset status unless you want every update to force "Pending"
-    };
-
-    // Update the record
-    const updatedGsc = await GSC.findOneAndUpdate(
-      { user_id: userId, applicationNo },
-      updateData,
-      { new: true, runValidators: true }
-    );
-
-    const updatedGscObj = updatedGsc.toObject();
-    updatedGscObj.applicationDate =
-      updatedGsc.updatedAt && updatedGsc.updatedAt > updatedGsc.createdAt
-        ? updatedGsc.updatedAt
-        : updatedGsc.createdAt;
-
-    res.status(200).json({ success: true, message: 'GSC updated successfully', data: updatedGscObj });
-  } catch (error) {
-    console.error('GSC Update Error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
 };
 
 
@@ -156,9 +143,10 @@ export const getGSC = async (req, res) => {
         const userId = req.user._id;
         const applications = await GSC.find({ user_id: userId }).sort({ createdAt: -1 });
 
-        // Add applicationDate to each document before sending
+        // Add applicationDate to each document before sending (CRITICAL for frontend)
         const applicationsWithDate = applications.map(app => {
             const appObj = app.toObject();
+            // Assuming your GSC model has a virtual property that computes applicationDate
             appObj.applicationDate = app.updatedAt && app.updatedAt > app.createdAt ? app.updatedAt : app.createdAt;
             return appObj;
         });

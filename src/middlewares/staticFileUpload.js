@@ -78,6 +78,7 @@ const staticFileUpload = (
 export default staticFileUpload;
 
 
+
 // // middlewares/staticFileUpload.js
 // import multer from 'multer';
 // import path from 'path';
