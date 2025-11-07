@@ -6,6 +6,26 @@ const nocSchema = new mongoose.Schema({
         ref: 'User',
         required: true
     },
+    
+    // --- ADDED FIELDS FOR APPLICATION TRACKING ---
+    applicationNo: {
+        type: String,
+        required: true,
+        unique: true
+    },
+    
+    name: { // Store the user's name for easy display
+        type: String,
+        required: true
+    },
+    
+    status: {
+        type: String,
+        enum: ['Pending', 'Approved', 'Rejected'],
+        default: 'Pending',
+        required: true
+    },
+    // --- END OF ADDED FIELDS ---
 
     dental_council_name: {
         type: String,
@@ -27,7 +47,16 @@ const nocSchema = new mongoose.Schema({
         required: [true, 'Postal address is required']
     }
 }, {
-    timestamps: true
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
 });
+
+// Virtual property to compute the date of the application for the frontend table
+nocSchema.virtual('applicationDate').get(function() {
+    // Return the latest date (updatedAt if it exists and is newer, otherwise createdAt)
+    return this.updatedAt > this.createdAt ? this.updatedAt : this.createdAt;
+});
+
 const NOC = mongoose.model('NOC', nocSchema);
 export default NOC;

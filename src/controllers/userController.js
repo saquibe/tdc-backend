@@ -11,6 +11,8 @@ import User from '../models/User.js';
 import BasicUser from '../models/BasicUser.js'; // Import BasicUser model
 import sendEmail from '../utils/sendEmail.js';
 import { uploadBufferToCloudinary } from '../utils/uploadToCloudinary.js';
+import { generateTemporaryId } from '../utils/generateTempID.js';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,7 +23,6 @@ const generateToken = (id) => {
   });
 };
 
-// ================= REGISTER AND TRANSFER USER PROFILE =================
 export const registerUser = async (req, res) => {
   try {
     const basicUser = req.user;
@@ -29,73 +30,112 @@ export const registerUser = async (req, res) => {
     if (!basicUser) {
       return res.status(401).json({ error: "Authentication failed. User not found." });
     }
-    
-    // Destructure and validate all required fields
+
+    // --- Extract form data ---
     const {
-        nationality_id, regcategory_id, email, mobile_number, f_name, l_name,
-        father_name, mother_name, place, dob, category, address, pan_number,
-        aadhaar_number, regtype
+      nationality_id, regcategory_id, email, mobile_number,
+      f_name, l_name, m_name, father_name, mother_name,
+      place, dob, category, address, pan_number, aadhaar_number,
+      regtype, gender
     } = req.cleanedFormData;
 
-    if (!f_name || !l_name || !father_name || !mother_name || !place || !dob || !category || !address ||
-        !pan_number || !aadhaar_number || !regtype || !email || !mobile_number || !nationality_id || !regcategory_id) {
-        return res.status(400).json({ error: "Missing required personal information fields." });
+    // --- Validate required fields ---
+    const required = [
+      nationality_id, regcategory_id, f_name, l_name, father_name, mother_name,
+      place, dob, category, address, pan_number, aadhaar_number,
+      regtype, email, mobile_number, gender
+    ];
+    if (required.some(f => !f)) {
+      return res.status(400).json({ error: "Missing required registration details." });
     }
 
-    const existingFullUser = await User.findOne({ email: basicUser.email });
-    if (existingFullUser) {
-        return res.status(409).json({ error: "A full profile already exists for this user." });
-    }
-
-    const uploadedFileUrls = {};
-    for (const [fieldName, file] of Object.entries(req.fileBufferMap)) {
-        if (path.extname(file.originalname).toLowerCase() !== '.pdf') {
-            return res.status(400).json({ error: `Only PDF files allowed. '${file.originalname}' is not a PDF.` });
-        }
-        const fullName = [f_name, l_name].filter(Boolean).join('_');
-        const safeName = fullName.replace(/[^a-zA-Z0-9_]/g, '').replace(/[ ]+/g, '_');
-        const cloudinaryUrl = await uploadBufferToCloudinary(file.buffer, safeName, fieldName);
-        uploadedFileUrls[fieldName] = cloudinaryUrl;
-    }
-
-    // Create a NEW User document by combining BasicUser and form data
-    const newUser = new User({
-        ...basicUser.toObject(),
-        ...req.cleanedFormData,
-        ...uploadedFileUrls,
-        regtype: regtype.trim()
+    // --- Prevent duplicate pending applications ---
+    const existingApp = await User.findOne({
+      basic_user_id: basicUser._id,
+      status: { $in: ["Pending", "Under Review"] }
     });
-    
-    delete newUser._id;
-
-    // Await the save operation to confirm it was successful
-    const savedUser = await newUser.save();
-    
-    if (!savedUser) {
-      throw new Error("User document could not be saved to the database.");
+    if (existingApp) {
+      return res.status(409).json({ error: "You already have a pending application." });
     }
 
-    // Delete the old BasicUser document to prevent duplicates
-    // await BasicUser.findByIdAndDelete(basicUser._id);
+    // --- Upload files to Cloudinary ---
+    const uploadedFileUrls = {}; // ✅ declare outside
+    if (req.fileBufferMap && Object.keys(req.fileBufferMap).length > 0) {
+      for (const [fieldName, file] of Object.entries(req.fileBufferMap)) {
+        if (path.extname(file.originalname).toLowerCase() !== '.pdf') {
+          return res.status(400).json({ error: `Only PDF files allowed for ${fieldName}.` });
+        }
+        const safeName = `${f_name}_${l_name}`.replace(/\s+/g, '_');
+        const url = await uploadBufferToCloudinary(file.buffer, safeName, fieldName);
+        uploadedFileUrls[fieldName] = url;
+      }
+    }
 
-    const token = generateToken(newUser._id);
-    res.status(201).json({
+    // --- Clean up possible whitespace or hidden characters ---
+    req.cleanedFormData.gender = (req.cleanedFormData.gender || '').trim();
+    req.cleanedFormData.regtype = (req.cleanedFormData.regtype || '').trim();
+
+    // --- Generate a unique temporary application ID ---
+    const temporary_id = generateTemporaryId("APP");
+
+    // --- Create new application in User model ---
+    const newApplication = new User({
+      basic_user_id: basicUser._id,
+      temporary_id,
+      membership_id: basicUser.membership_id || null,
+      nationality_id,
+      regcategory_id,
+      f_name,
+      m_name,
+      l_name,
+      father_name,
+      mother_name,
+      place,
+      dob,
+      category,
+      gender, // ✅ added
+      email,
+      mobile_number,
+      address,
+      pan_number,
+      aadhaar_number,
+      regtype,
+      ...uploadedFileUrls // ✅ now defined
+    });
+
+    const savedApplication = await newApplication.save();
+
+    // --- Update BasicUser with new profile info + reference ---
+    basicUser.category = category;
+    basicUser.name_in_full = `${f_name} ${m_name || ''} ${l_name}`.trim();
+    basicUser.gender = req.cleanedFormData.gender;
+    basicUser.father_name = father_name;
+    basicUser.mother_name = mother_name;
+    basicUser.address = address;
+    basicUser.qualification_description = req.cleanedFormData.qualification_description || '';
+    basicUser.aadhaar_number = aadhaar_number;
+    basicUser.pan_number = pan_number;
+    basicUser.last_application = savedApplication._id;
+    basicUser.last_application_status = "Pending";
+    basicUser.applications.push(savedApplication._id);
+
+    await basicUser.save();
+
+    return res.status(201).json({
       success: true,
-      message: "User registered and profile created successfully.",
-      token,
+      message: "Registration application submitted successfully.",
       data: {
-        id: newUser._id,
-        f_name: newUser.f_name,
-        l_name: newUser.l_name,
-        email: newUser.email,
+        application_id: savedApplication._id,
+        temporary_id,
+        status: "Pending"
       }
     });
-
-  } catch (err) {
-    console.error("Registration and Transfer Error:", err);
-    res.status(500).json({ success: false, error: err.message });
+  } catch (error) {
+    console.error("Registration Error:", error);
+    res.status(500).json({ success: false, error: error.message });
   }
 };
+
 
 // ================= LOGIN USER =================
 // ================= LOGIN USER (FIXED FOR NO BCRYPT) =================

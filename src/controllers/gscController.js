@@ -82,6 +82,62 @@ export const applyGSC = async (req, res) => {
 };
 
 // ====== UPDATE EXISTING GSC APPLICATION ======
+// export const updateGSC = async (req, res) => {
+//     try {
+//         const { applicationNo } = req.params;
+//         const { postal_address } = req.cleanedFormData;
+//         const userId = req.user._id;
+
+//         // 1. Find existing GSC record for partial update logic
+//         const existingGsc = await GSC.findOne({ user_id: userId, applicationNo });
+//         if (!existingGsc) {
+//             return res.status(404).json({ success: false, error: 'Application not found or unauthorized' });
+//         }
+
+//         // 2. Validate essential text fields
+//         if (!postal_address) {
+//             return res.status(400).json({ error: 'Postal address is required' });
+//         }
+        
+//         // 3. Upload only the new files (req.fileBufferMap only contains newly uploaded files)
+//         const savedFiles = await handleFileUpload(req);
+        
+//         // 4. MERGE LOGIC: Combine old file URLs with newly uploaded URLs
+//         const updateData = {
+//             // Text fields: Use new value, or fallback to existing value if new value is empty
+//             postal_address: req.cleanedFormData.postal_address || existingGsc.postal_address,
+//             // User Name: Must be re-calculated from the current User document
+//             name: req.user.full_name || `${req.user.f_name || ''} ${req.user.m_name || ''} ${req.user.l_name || ''}`.trim(),
+//             status: 'Pending', // Force status back to Pending on resubmission
+
+//             // File Fields: Loop through model fields, use new URL if uploaded, otherwise use old URL
+//             tdc_reg_certificate_upload: savedFiles.tdc_reg_certificate_upload || existingGsc.tdc_reg_certificate_upload,
+//             testimonial_d1_upload: savedFiles.testimonial_d1_upload || existingGsc.testimonial_d1_upload,
+//             testimonial_d2_upload: savedFiles.testimonial_d2_upload || existingGsc.testimonial_d2_upload,
+//             aadhaar_upload: savedFiles.aadhaar_upload || existingGsc.aadhaar_upload,
+//             tdc_reg_d1_upload: savedFiles.tdc_reg_d1_upload || existingGsc.tdc_reg_d1_upload,
+//             tdc_reg_d2_upload: savedFiles.tdc_reg_d2_upload || existingGsc.tdc_reg_d2_upload,
+//         };
+
+//         // 5. Update the record
+//         const updatedGsc = await GSC.findOneAndUpdate(
+//             { user_id: userId, applicationNo },
+//             { $set: updateData }, // Use $set to update fields
+//             { new: true, runValidators: true }
+//         );
+
+//         const updatedGscObj = updatedGsc.toObject();
+//         updatedGscObj.applicationDate = updatedGsc.updatedAt || updatedGsc.createdAt;
+        
+//         res.status(200).json({ success: true, message: 'GSC updated successfully', data: updatedGscObj });
+//     } catch (error) {
+//         console.error('GSC Update Error:', error);
+//         res.status(500).json({ success: false, error: error.message });
+//     }
+// };
+
+// File: src/controllers/gscController.js (Updated updateGSC function only)
+
 export const updateGSC = async (req, res) => {
     try {
         const { applicationNo } = req.params;
@@ -94,18 +150,15 @@ export const updateGSC = async (req, res) => {
             return res.status(404).json({ success: false, error: 'Application not found or unauthorized' });
         }
 
-        // 2. Validate essential text fields
-        if (!postal_address) {
-            return res.status(400).json({ error: 'Postal address is required' });
-        }
-        
-        // 3. Upload only the new files (req.fileBufferMap only contains newly uploaded files)
+        // 2. Upload only the new files (req.fileBufferMap only contains newly uploaded files)
         const savedFiles = await handleFileUpload(req);
         
-        // 4. MERGE LOGIC: Combine old file URLs with newly uploaded URLs
+        // 3. MERGE LOGIC: Combine old file URLs with newly uploaded URLs
         const updateData = {
-            // Text fields: Use new value, or fallback to existing value if new value is empty
-            postal_address: req.cleanedFormData.postal_address || existingGsc.postal_address,
+            // CRITICAL FIX: The check is now dynamic. If postal_address is empty/undefined 
+            // in the request, the existingGsc.postal_address value is used.
+            postal_address: postal_address || existingGsc.postal_address,
+            
             // User Name: Must be re-calculated from the current User document
             name: req.user.full_name || `${req.user.f_name || ''} ${req.user.m_name || ''} ${req.user.l_name || ''}`.trim(),
             status: 'Pending', // Force status back to Pending on resubmission
@@ -119,7 +172,7 @@ export const updateGSC = async (req, res) => {
             tdc_reg_d2_upload: savedFiles.tdc_reg_d2_upload || existingGsc.tdc_reg_d2_upload,
         };
 
-        // 5. Update the record
+        // 4. Update the record
         const updatedGsc = await GSC.findOneAndUpdate(
             { user_id: userId, applicationNo },
             { $set: updateData }, // Use $set to update fields
@@ -135,7 +188,6 @@ export const updateGSC = async (req, res) => {
         res.status(500).json({ success: false, error: error.message });
     }
 };
-
 
 // ====== GET GSC ======
 export const getGSC = async (req, res) => {
