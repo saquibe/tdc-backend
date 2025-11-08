@@ -1,33 +1,38 @@
 import express from 'express';
-import { applyNOC, updateNOC, getNOC } from '../controllers/nocController.js';
+import {
+  applyNOC,
+  updateNOC,
+  getAllNOC,
+  getNOCById,
+} from '../controllers/nocController.js';
 import staticFileUpload from '../middlewares/staticFileUpload.js';
-import { protectRegisteredUser } from '../middlewares/protectRegisteredUser.js'; // Assuming this is defined elsewhere
+import { protect } from '../middlewares/userAuth.js'; // <-- your JWT middleware
 
 const router = express.Router();
 
-const nocFields = [
-  'tdc_reg_certificate_upload',
-  'aadhaar_upload'
-];
+const nocFileFields = ['tdc_reg_certificate_upload', 'aadhaar_upload'];
 const nocTextFields = ['postal_address', 'dental_council_name'];
 
-// --- ROUTE FOR NEW APPLICATIONS (all files required) ---
+// POST - Apply NOC
 router.post(
   '/apply-noc',
-  protectRegisteredUser,
-  staticFileUpload(nocFields, nocTextFields, { required: true }),
+  protect,
+  staticFileUpload(nocFileFields, nocTextFields, { required: true }),
   applyNOC
 );
 
-// --- NEW ROUTE FOR UPDATING EXISTING APPLICATIONS (files optional) ---
-router.put(
-  '/apply-noc/:applicationNo',
-  protectRegisteredUser,
-  staticFileUpload(nocFields, nocTextFields, { required: false }),
+// POST - Update existing NOC (instead of PUT)
+router.post(
+  "/update-noc/:applicationNo",
+  protect,
+  staticFileUpload(nocFileFields, nocTextFields, { required: false }),
   updateNOC
 );
 
-// --- ROUTE TO GET ALL APPLICATIONS ---
-router.get('/noc', protectRegisteredUser, getNOC);
+// GET - All NOC applications
+router.get('/noc', protect, getAllNOC);
+
+// GET - Specific NOC by ID
+router.get('/noc/:applicationNo', protect, getNOCById);
 
 export default router;

@@ -23,39 +23,34 @@ const basicUserSchema = new mongoose.Schema({
     minlength: [8, 'Password must be at least 8 characters']
   },
 
-  // 🔑 Password Reset fields
   resetPasswordToken: String,
   resetPasswordExpire: Date,
 
-  // 🆔 Membership & Relationship
   membership_id: {
     type: String,
     unique: true,
     sparse: true
   },
 
-  // 🔗 Reference to all user applications
-  applications: [
-    {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User'
-    }
-  ],
+  applications: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
 
-  // 📄 Profile details (filled after approval)
-  category: { type: String },
-  name_in_full: { type: String },
-  gender: { type: String },
-  father_name: { type: String },
-  mother_name: { type: String },
-  place_dob: { type: String },
-  nationality: { type: String },
-  address: { type: String },
-  qualification_description: { type: String },
-  aadhaar_number: { type: String },
-  pan_number: { type: String },
+  // 🧩 Extended profile info
+  category: String,
+  name_in_full: String,
+  gender: String,
+  father_name: String,
+  mother_name: String,
+  place: String, // ✅ Added
+  dob: Date, // ✅ Added
+  nationality_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Nationality', // ✅ Link nationality for consistency
+  },
+  address: String,
+  qualification_description: String,
+  aadhaar_number: String,
+  pan_number: String,
 
-  // 📌 Keep track of latest application
   last_application: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'

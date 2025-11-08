@@ -111,6 +111,9 @@ export const registerUser = async (req, res) => {
     basicUser.gender = req.cleanedFormData.gender;
     basicUser.father_name = father_name;
     basicUser.mother_name = mother_name;
+    basicUser.place = place; // ✅
+basicUser.dob = dob; // ✅
+basicUser.nationality_id = nationality_id; // ✅
     basicUser.address = address;
     basicUser.qualification_description = req.cleanedFormData.qualification_description || '';
     basicUser.aadhaar_number = aadhaar_number;
@@ -342,5 +345,92 @@ export const getNationalities = async (req, res) => {
     res.status(200).json(nationalities);
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch nationalities." });
+  }
+};
+
+
+export const getUserProfile = async (req, res) => {
+  try {
+    const basicUser = req.user;
+
+    if (!basicUser) {
+      return res.status(401).json({ error: "Unauthorized access" });
+    }
+
+    // 🔍 Try fetching the most recent registration application
+    const userApplication = await User.findOne({ basic_user_id: basicUser._id })
+      .populate("regcategory_id", "name")
+      .populate("nationality_id", "name")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    let profileData = {};
+
+    if (userApplication) {
+      // ✅ Registered user: use data from User model
+      const formattedDOB = userApplication.dob
+        ? new Date(userApplication.dob).toLocaleDateString("en-GB")
+        : "N/A";
+
+      profileData = {
+        category: userApplication.regcategory_id?.name || "N/A",
+        membership_no:
+          userApplication.membership_id || "Pending Registration",
+        name_in_full: `${userApplication.f_name} ${
+          userApplication.m_name || ""
+        } ${userApplication.l_name}`,
+        gender: userApplication.gender || "N/A",
+        father_name: userApplication.father_name || "N/A",
+        mother_name: userApplication.mother_name || "N/A",
+        place_dob: `${userApplication.place || "N/A"}, ${formattedDOB}`,
+        nationality: userApplication.nationality_id?.name || "N/A",
+        address: userApplication.address || "N/A",
+        qualification_description:
+          userApplication.qualification_description ||
+          userApplication.regcategory_id?.name ||
+          "N/A",
+        email: userApplication.email || "N/A",
+        mobile_number: userApplication.mobile_number || "N/A",
+        aadhaar_number: userApplication.aadhaar_number || "N/A",
+        pan_number: userApplication.pan_number || "N/A",
+      };
+    } else {
+  const formattedDOB = basicUser.dob
+    ? new Date(basicUser.dob).toLocaleDateString('en-GB')
+    : 'N/A';
+
+  // ✅ Populate nationality name if exists
+  let nationalityName = 'N/A';
+  if (basicUser.nationality_id) {
+    const nationalityDoc = await mongoose.model('Nationality').findById(basicUser.nationality_id);
+    nationalityName = nationalityDoc?.name || 'N/A';
+  }
+
+  profileData = {
+    category: 'Pending Registration',
+    membership_no: 'N/A',
+    name_in_full: basicUser.name_in_full || basicUser.full_name || 'N/A',
+    gender: basicUser.gender || 'N/A',
+    father_name: basicUser.father_name || 'N/A',
+    mother_name: basicUser.mother_name || 'N/A',
+    place_dob: `${basicUser.place || 'N/A'}, ${formattedDOB}`,
+    nationality: nationalityName,
+    address: basicUser.address || 'N/A',
+    qualification_description: 'N/A',
+    email: basicUser.email || 'N/A',
+    mobile_number: basicUser.mobile_number || 'N/A',
+    aadhaar_number: basicUser.aadhaar_number || 'N/A',
+    pan_number: basicUser.pan_number || 'N/A',
+  };
+}
+
+
+    return res.status(200).json({
+      success: true,
+      data: profileData,
+    });
+  } catch (err) {
+    console.error("Profile Fetch Error:", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 };

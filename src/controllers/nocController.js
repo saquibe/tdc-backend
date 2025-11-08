@@ -1,151 +1,174 @@
 import path from 'path';
-import fs from 'fs';
 import { fileURLToPath } from 'url';
-
 import NOC from '../models/NOC.js';
 import { uploadBufferToCloudinary } from '../utils/uploadToCloudinary.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Helper function to generate a sequential application number (e.g., NOC-001)
+// Sequential NOC Application Number Generator
 const generateApplicationNumber = async () => {
-    const lastNOC = await NOC.findOne({}).sort({ createdAt: -1 });
-    const lastNumber = lastNOC ? parseInt(lastNOC.applicationNo.split('-')[1]) : 0;
-    return `NOC-${(lastNumber + 1).toString().padStart(3, '0')}`;
+  const lastNOC = await NOC.findOne({}).sort({ createdAt: -1 });
+  const lastNumber = lastNOC ? parseInt(lastNOC.applicationNo.split('-')[1]) : 0;
+  return `NOC-${(lastNumber + 1).toString().padStart(3, '0')}`;
 };
 
-// Common file upload logic
+// Common File Upload Utility
 const handleFileUpload = async (req) => {
-    // CRITICAL: Construct name based on available fields (guaranteed by protectRegisteredUser)
-    const name = req.user.full_name || `${req.user.f_name || ''} ${req.user.m_name || ''} ${req.user.l_name || ''}`;
-    const safeName = name.trim().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
-    
-    const savedFiles = {};
-    for (const [fieldName, file] of Object.entries(req.fileBufferMap)) {
-        const timestamp = Date.now();
-        const filename = `${timestamp}-${fieldName}.pdf`;
-        const cloudinaryUrl = await uploadBufferToCloudinary(file.buffer, filename, safeName);
-        savedFiles[fieldName] = cloudinaryUrl;
-    }
-    return savedFiles;
+  const name = req.user.name_in_full || req.user.full_name || 'User';
+  const safeName = name.trim().replace(/\s+/g, '_');
+  const savedFiles = {};
+
+  for (const [fieldName, file] of Object.entries(req.fileBufferMap || {})) {
+    const filename = `${Date.now()}-${fieldName}.pdf`;
+    const cloudUrl = await uploadBufferToCloudinary(file.buffer, filename, safeName);
+    savedFiles[fieldName] = cloudUrl;
+  }
+
+  return savedFiles;
 };
 
-// ====== CREATE NEW NOC APPLICATION (POST) ======
+// ================= APPLY NOC =================
 export const applyNOC = async (req, res) => {
-    try {
-        const { dental_council_name, postal_address } = req.cleanedFormData;
-        const userId = req.user._id;
+  try {
+    const basicUser = req.user;
 
-        const requiredFiles = ['tdc_reg_certificate_upload', 'aadhaar_upload'];
-        
-        // Validation check for file uploads (enforced by middleware {required: true})
-        // We only need to check text fields here, as file checks are done in staticFileUpload
-        if (!dental_council_name || !postal_address) {
-            return res.status(400).json({ error: 'Missing required text fields.' });
-        }
-
-        const savedFiles = await handleFileUpload(req);
-        const newApplicationNo = await generateApplicationNumber();
-        
-        const userName = req.user.full_name || `${req.user.f_name || ''} ${req.user.m_name || ''} ${req.user.l_name || ''}`.trim();
-        
-        const noc = new NOC({
-            user_id: userId,
-            dental_council_name,
-            postal_address,
-            applicationNo: newApplicationNo,
-            name: userName,
-            status: 'Pending',
-            ...savedFiles
-        });
-
-        await noc.save();
-
-        const nocObj = noc.toObject();
-        // Add applicationDate using the virtual property
-        nocObj.applicationDate = noc.applicationDate;
-        
-        res.status(201).json({ success: true, message: 'NOC submitted successfully', data: nocObj });
-    } catch (error) {
-        console.error('NOC Submission Error:', error);
-        res.status(500).json({ success: false, error: error.message });
+    if (!basicUser?.membership_id) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only users with a valid membership ID can apply for NOC.',
+      });
     }
+
+    const { dental_council_name, postal_address } = req.cleanedFormData;
+    if (!dental_council_name || !postal_address) {
+      return res.status(400).json({ success: false, error: 'Missing required text fields.' });
+    }
+
+    const savedFiles = await handleFileUpload(req);
+    const newApplicationNo = await generateApplicationNumber();
+
+    const newNOC = new NOC({
+      basic_user_id: basicUser._id,
+      membership_id: basicUser.membership_id,
+      name: basicUser.name_in_full || basicUser.full_name,
+      dental_council_name,
+      postal_address,
+      applicationNo: newApplicationNo,
+      status: 'Pending',
+      ...savedFiles,
+    });
+
+    await newNOC.save();
+
+    res.status(201).json({
+      success: true,
+      message: 'NOC application submitted successfully.',
+      data: { ...newNOC.toObject(), applicationDate: newNOC.applicationDate },
+    });
+  } catch (error) {
+    console.error('NOC Apply Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
 };
 
-// ====== UPDATE EXISTING NOC APPLICATION (PUT) ======
-// File: src/controllers/nocController.js (Updated function only)
-
-// File: src/controllers/nocController.js (Updated updateNOC function only)
-
+// ================= UPDATE NOC (now via POST) =================
 export const updateNOC = async (req, res) => {
-    try {
-        const { applicationNo } = req.params;
-        const { postal_address, dental_council_name } = req.cleanedFormData;
-        const userId = req.user._id;
+  try {
+    const { applicationNo } = req.params;
+    const basicUser = req.user;
 
-        // 1. Find existing NOC record
-        const existingNoc = await NOC.findOne({ user_id: userId, applicationNo });
-        if (!existingNoc) {
-            return res.status(404).json({ success: false, error: 'Application not found or unauthorized' });
-        }
-        
-        // **CRITICAL FIX:** We remove the rigid check for text fields here.
-        // We now trust the MERGE LOGIC to retain old values if the new ones are empty.
-        
-        // 2. Upload only the new files (req.fileBufferMap contains only uploaded files)
-        const savedFiles = await handleFileUpload(req);
-        
-        const userName = req.user.full_name || `${req.user.f_name || ''} ${req.user.m_name || ''} ${req.user.l_name || ''}`.trim();
-        
-        // 3. MERGE LOGIC
-        const updateData = {
-            // Text fields: If the field is missing/empty in the new request, fall back to the existing value.
-            // This allows for true partial updates on text fields.
-            postal_address: postal_address || existingNoc.postal_address,
-            dental_council_name: dental_council_name || existingNoc.dental_council_name,
-            
-            // File Fields: Use new URL from upload (savedFiles), or fallback to existing URL
-            tdc_reg_certificate_upload: savedFiles.tdc_reg_certificate_upload || existingNoc.tdc_reg_certificate_upload,
-            aadhaar_upload: savedFiles.aadhaar_upload || existingNoc.aadhaar_upload,
-            
-            name: userName,
-            status: 'Pending', // Force status back to Pending on resubmission
-        };
+    console.log("🟢 NOC Update Request Received:", applicationNo);
 
-        // 4. Update the record
-        const updatedNoc = await NOC.findOneAndUpdate(
-            { user_id: userId, applicationNo },
-            { $set: updateData },
-            { new: true, runValidators: true }
-        );
+    // 1️⃣ Find existing record
+    const existingNoc = await NOC.findOne({
+      basic_user_id: basicUser._id,
+      applicationNo,
+    });
 
-        const updatedNocObj = updatedNoc.toObject();
-        updatedNocObj.applicationDate = updatedNoc.applicationDate;
-
-        res.status(200).json({ success: true, message: 'NOC updated successfully', data: updatedNocObj });
-    } catch (error) {
-        console.error('NOC Update Error:', error);
-        res.status(500).json({ success: false, error: error.message });
+    if (!existingNoc) {
+      return res.status(404).json({
+        success: false,
+        error: "NOC application not found.",
+      });
     }
+
+    // 2️⃣ Handle uploaded files (if any)
+    const savedFiles = await handleFileUpload(req);
+    const { postal_address, dental_council_name } = req.cleanedFormData || {};
+
+    // 3️⃣ Merge old + new data
+    const updatedData = {
+      postal_address: postal_address || existingNoc.postal_address,
+      dental_council_name:
+        dental_council_name || existingNoc.dental_council_name,
+      tdc_reg_certificate_upload:
+        savedFiles?.tdc_reg_certificate_upload ||
+        existingNoc.tdc_reg_certificate_upload,
+      aadhaar_upload:
+        savedFiles?.aadhaar_upload || existingNoc.aadhaar_upload,
+      status: "Pending",
+    };
+
+    // 4️⃣ Save update
+    const updatedNoc = await NOC.findOneAndUpdate(
+      { basic_user_id: basicUser._id, applicationNo },
+      { $set: updatedData },
+      { new: true, runValidators: true }
+    );
+
+    // 5️⃣ Respond
+    return res.status(200).json({
+      success: true,
+      message: "NOC updated successfully.",
+      data: {
+        ...updatedNoc.toObject(),
+        applicationDate: updatedNoc.applicationDate,
+      },
+    });
+  } catch (error) {
+    console.error("❌ NOC Update Error:", error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal Server Error",
+    });
+  }
 };
 
-// ====== GET NOC APPLICATIONS ======
-export const getNOC = async (req, res) => {
-    try {
-        const userId = req.user._id;
-        const applications = await NOC.find({ user_id: userId }).sort({ createdAt: -1 });
+// ================= GET ALL NOC APPLICATIONS =================
+export const getAllNOC = async (req, res) => {
+  try {
+    const applications = await NOC.find({ basic_user_id: req.user._id }).sort({ createdAt: -1 });
+    const data = applications.map((a) => ({
+      ...a.toObject(),
+      applicationDate: a.applicationDate,
+    }));
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    console.error('Fetch NOC Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
 
-        // Add applicationDate using the virtual property for frontend compatibility
-        const applicationsWithDate = applications.map(app => {
-            const appObj = app.toObject();
-            appObj.applicationDate = app.applicationDate;
-            return appObj;
-        });
+// ================= GET NOC BY APPLICATION ID =================
+export const getNOCById = async (req, res) => {
+  try {
+    const { applicationNo } = req.params;
+    const noc = await NOC.findOne({
+      basic_user_id: req.user._id,
+      applicationNo,
+    });
 
-        res.status(200).json({ success: true, data: applicationsWithDate });
-    } catch (error) {
-        console.error('Fetch NOC Error:', error);
-        res.status(500).json({ success: false, error: error.message });
+    if (!noc) {
+      return res.status(404).json({ success: false, error: 'NOC not found.' });
     }
+
+    res.status(200).json({
+      success: true,
+      data: { ...noc.toObject(), applicationDate: noc.applicationDate },
+    });
+  } catch (error) {
+    console.error('Fetch NOC by ID Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
 };
