@@ -1,85 +1,111 @@
-import path from 'path';
-import fs from 'fs';
-import jwt from 'jsonwebtoken';
-import bcrypt from 'bcryptjs';
-import crypto from 'crypto';
-import { fileURLToPath } from 'url';
+import path from "path";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+import crypto from "crypto";
+import { fileURLToPath } from "url";
+import { uploadBufferToS3 } from "../utils/uploadToS3.js"; // your v3 S3 helper
 
-import RegistrationCategory from '../models/RegistrationCategory.js';
-import Nationality from '../models/Nationality.js';
-import User from '../models/User.js';
-import BasicUser from '../models/BasicUser.js'; // Import BasicUser model
-import sendEmail from '../utils/sendEmail.js';
-import { uploadBufferToCloudinary } from '../utils/uploadToCloudinary.js';
-import { generateTemporaryId } from '../utils/generateTempID.js';
-
+import RegistrationCategory from "../models/RegistrationCategory.js";
+import Nationality from "../models/Nationality.js";
+import User from "../models/User.js";
+import BasicUser from "../models/BasicUser.js";
+import sendEmail from "../utils/sendEmail.js";
+import { generateTemporaryId } from "../utils/generateTempID.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRE || '7d'
+/* ================= JWT ================= */
+const generateToken = (id) =>
+  jwt.sign({ id }, process.env.JWT_SECRET, {
+    expiresIn: process.env.JWT_EXPIRE || "7d",
   });
-};
 
+/* ================= REGISTER USER ================= */
 export const registerUser = async (req, res) => {
   try {
     const basicUser = req.user;
-
     if (!basicUser) {
-      return res.status(401).json({ error: "Authentication failed. User not found." });
+      return res.status(401).json({ error: "Authentication failed" });
     }
 
-    // --- Extract form data ---
     const {
-      nationality_id, regcategory_id, email, mobile_number,
-      f_name, l_name, m_name, father_name, mother_name,
-      place, dob, category, address, pan_number, aadhaar_number,
-      regtype, gender
+      nationality_id,
+      regcategory_id,
+      email,
+      mobile_number,
+      f_name,
+      l_name,
+      m_name,
+      father_name,
+      mother_name,
+      place,
+      dob,
+      category,
+      address,
+      pan_number,
+      aadhaar_number,
+      regtype,
+      gender,
     } = req.cleanedFormData;
 
-    // --- Validate required fields ---
-    const required = [
-      nationality_id, regcategory_id, f_name, l_name, father_name, mother_name,
-      place, dob, category, address, pan_number, aadhaar_number,
-      regtype, email, mobile_number, gender
-    ];
-    if (required.some(f => !f)) {
-      return res.status(400).json({ error: "Missing required registration details." });
+    if (
+      !nationality_id ||
+      !regcategory_id ||
+      !f_name ||
+      !l_name ||
+      !father_name ||
+      !mother_name ||
+      !place ||
+      !dob ||
+      !category ||
+      !address ||
+      !pan_number ||
+      !aadhaar_number ||
+      !email ||
+      !mobile_number ||
+      !regtype ||
+      !gender
+    ) {
+      return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // --- Prevent duplicate pending applications ---
-    const existingApp = await User.findOne({
+    const existing = await User.findOne({
       basic_user_id: basicUser._id,
-      status: { $in: ["Pending", "Under Review"] }
+      status: { $in: ["Pending", "Under Review"] },
     });
-    if (existingApp) {
-      return res.status(409).json({ error: "You already have a pending application." });
+
+    if (existing) {
+      return res.status(409).json({ error: "Application already pending" });
     }
 
-    // --- Upload files to Cloudinary ---
-    const uploadedFileUrls = {}; // ✅ declare outside
-    if (req.fileBufferMap && Object.keys(req.fileBufferMap).length > 0) {
-      for (const [fieldName, file] of Object.entries(req.fileBufferMap)) {
-        if (path.extname(file.originalname).toLowerCase() !== '.pdf') {
-          return res.status(400).json({ error: `Only PDF files allowed for ${fieldName}.` });
+    /* ===== FILE UPLOAD TO S3 ===== */
+    const uploadedFileUrls = {};
+    if (req.fileBufferMap) {
+      for (const [field, file] of Object.entries(req.fileBufferMap)) {
+        if (path.extname(file.originalname).toLowerCase() !== ".pdf") {
+          return res.status(400).json({ error: `${field} must be PDF` });
         }
-        const safeName = `${f_name}_${l_name}`.replace(/\s+/g, '_');
-        const url = await uploadBufferToCloudinary(file.buffer, safeName, fieldName);
-        uploadedFileUrls[fieldName] = url;
+        if (req.fileBufferMap) {
+          for (const [field, file] of Object.entries(req.fileBufferMap)) {
+            if (path.extname(file.originalname).toLowerCase() !== ".pdf") {
+              return res.status(400).json({ error: `${field} must be PDF` });
+            }
+
+            // Upload file to S3 using v3 helper
+            uploadedFileUrls[field] = await uploadBufferToS3(
+              file.buffer,
+              file.originalname,
+              `registrations/${f_name}_${l_name}` // folder path
+            );
+          }
+        }
       }
     }
 
-    // --- Clean up possible whitespace or hidden characters ---
-    req.cleanedFormData.gender = (req.cleanedFormData.gender || '').trim();
-    req.cleanedFormData.regtype = (req.cleanedFormData.regtype || '').trim();
-
-    // --- Generate a unique temporary application ID ---
     const temporary_id = generateTemporaryId("APP");
 
-    // --- Create new application in User model ---
-    const newApplication = new User({
+    const application = await User.create({
       basic_user_id: basicUser._id,
       temporary_id,
       membership_id: basicUser.membership_id || null,
@@ -93,344 +119,139 @@ export const registerUser = async (req, res) => {
       place,
       dob,
       category,
-      gender, // ✅ added
+      gender,
       email,
       mobile_number,
       address,
       pan_number,
       aadhaar_number,
       regtype,
-      ...uploadedFileUrls // ✅ now defined
+      ...uploadedFileUrls,
     });
 
-    const savedApplication = await newApplication.save();
-
-    // --- Update BasicUser with new profile info + reference ---
-    basicUser.category = category;
-    basicUser.name_in_full = `${f_name} ${m_name || ''} ${l_name}`.trim();
-    basicUser.gender = req.cleanedFormData.gender;
-    basicUser.father_name = father_name;
-    basicUser.mother_name = mother_name;
-    basicUser.place = place; // ✅
-basicUser.dob = dob; // ✅
-basicUser.nationality_id = nationality_id; // ✅
+    basicUser.name_in_full = `${f_name} ${m_name || ""} ${l_name}`.trim();
+    basicUser.gender = gender;
+    basicUser.place = place;
+    basicUser.dob = dob;
+    basicUser.nationality_id = nationality_id;
     basicUser.address = address;
-    basicUser.qualification_description = req.cleanedFormData.qualification_description || '';
-    basicUser.aadhaar_number = aadhaar_number;
     basicUser.pan_number = pan_number;
-    basicUser.last_application = savedApplication._id;
+    basicUser.aadhaar_number = aadhaar_number;
+    basicUser.last_application = application._id;
     basicUser.last_application_status = "Pending";
-    basicUser.applications.push(savedApplication._id);
+    basicUser.applications.push(application._id);
 
     await basicUser.save();
 
-    return res.status(201).json({
+    res.status(201).json({
       success: true,
-      message: "Registration application submitted successfully.",
+      message: "Registration submitted",
       data: {
-        application_id: savedApplication._id,
+        application_id: application._id,
         temporary_id,
-        status: "Pending"
-      }
-    });
-  } catch (error) {
-    console.error("Registration Error:", error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-
-// ================= LOGIN USER =================
-// ================= LOGIN USER (FIXED FOR NO BCRYPT) =================
-export const loginUser = async (req, res) => {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-        return res.status(400).json({ message: 'Email and password are required.' });
-    }
-
-    // Look for the user in the new User model
-    const user = await User.findOne({ email });
-    
-    if (!user) {
-        // If not in the User model, check the BasicUser model
-        const basicUser = await BasicUser.findOne({ email });
-        
-        if (!basicUser) {
-            return res.status(400).json({ message: 'Invalid email or password.' });
-        }
-        
-        // --- TEMPORARY FIX: Direct String Comparison for BasicUser ---
-        // NOTE: This is NOT secure and must be replaced with bcrypt.compare(password, basicUser.password)
-        if (password !== basicUser.password) {
-            return res.status(400).json({ message: 'Invalid email or password.' });
-        }
-        // --- END OF TEMPORARY FIX ---
-
-        const token = generateToken(basicUser._id);
-        res.cookie('token', token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'Strict',
-            maxAge: 7 * 24 * 60 * 60 * 1000
-        });
-        return res.status(200).json({
-            success: true,
-            message: 'Login successful',
-            user: { id: basicUser._id, fullname: basicUser.full_name, email: basicUser.email }
-        });
-    }
-
-    // --- TEMPORARY FIX: Direct String Comparison for Full User ---
-    // NOTE: This is NOT secure and must be replaced with bcrypt.compare(password, user.password)
-    if (password !== user.password) {
-        return res.status(400).json({ message: 'Invalid email or password.' });
-    }
-    // --- END OF TEMPORARY FIX ---
-
-    const token = generateToken(user._id);
-
-    res.cookie('token', token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'Strict',
-        maxAge: 7 * 24 * 60 * 60 * 1000
-    });
-
-    res.status(200).json({
-        success: true,
-        message: 'Login successful',
-        user: {
-            id: user._id,
-            fullname: `${user.f_name} ${user.m_name || ''} ${user.l_name}`.trim(),
-            email: user.email
-        }
-    });
-};
-
-// ================= LOGOUT USER =================
-export const logoutUser = (req, res) => {
-  res.clearCookie('token', {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'Strict'
-  });
-
-  res.status(200).json({ success: true, message: 'Logged out successfully' });
-};
-
-// ================= GET PROFILE =================
-// export const getProfile = async (req, res) => {
-//   res.status(200).json({
-//     success: true,
-//     data: req.user
-//   });
-// };
-// ================= GET PROFILE =================
-export const getProfile = async (req, res) => {
-  try {
-    // req.user._id should be set by your 'protect' middleware
-    const user = await User.findById(req.user._id)
-      .populate('regcategory_id', 'name')
-      .populate('nationality_id', 'name')
-      .lean();
-
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    // Flatten populated fields for frontend
-    const responseProfile = {
-      ...user,
-      regcategory_name: user.regcategory_id?.name || '',
-      nationality_name: user.nationality_id?.name || '',
-      // To avoid exposing password/hash:
-      password: undefined,
-      resetPasswordToken: undefined,
-      resetPasswordExpire: undefined,
-      __v: undefined,
-    };
-
-    res.status(200).json({
-      success: true,
-      data: responseProfile,
+        status: "Pending",
+      },
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    console.error("Register Error:", err);
+    res.status(500).json({ error: err.message });
   }
 };
 
+/* ================= LOGIN ================= */
+export const loginUser = async (req, res) => {
+  const { email, password } = req.body;
 
-// ================= FORGOT PASSWORD =================
+  const user =
+    (await User.findOne({ email })) || (await BasicUser.findOne({ email }));
+
+  if (!user || password !== user.password) {
+    return res.status(400).json({ message: "Invalid credentials" });
+  }
+
+  const token = generateToken(user._id);
+
+  res.cookie("token", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "Strict",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
+  res.json({ success: true, message: "Login successful" });
+};
+
+/* ================= LOGOUT ================= */
+export const logoutUser = (req, res) => {
+  res.clearCookie("token");
+  res.json({ success: true });
+};
+
+/* ================= GET PROFILE ================= */
+export const getUserProfile = async (req, res) => {
+  const user = await User.findById(req.user._id)
+    .populate("regcategory_id", "name")
+    .populate("nationality_id", "name")
+    .lean();
+
+  if (!user) return res.status(404).json({ error: "User not found" });
+
+  res.json({ success: true, data: user });
+};
+
+/* ================= PASSWORD RESET ================= */
 export const forgotPassword = async (req, res) => {
-  const { email } = req.body;
-  const user = await User.findOne({ email });
-  if (!user) return res.status(404).json({ message: 'User not found.' });
+  const user = await User.findOne({ email: req.body.email });
+  if (!user) return res.status(404).json({ error: "User not found" });
 
-  const resetToken = crypto.randomBytes(20).toString('hex');
-  user.resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+  const token = crypto.randomBytes(20).toString("hex");
+  user.resetPasswordToken = crypto
+    .createHash("sha256")
+    .update(token)
+    .digest("hex");
   user.resetPasswordExpire = Date.now() + 15 * 60 * 1000;
 
   await user.save({ validateBeforeSave: false });
 
-  const resetUrl = `${req.protocol}://${req.get('host')}/api/users/reset-password/${resetToken}`;
-  const message = `
-    <h3>Hello ${user.f_name},</h3>
-    <p>You requested to reset your password.</p>
-    <p><a href="${resetUrl}">Click here to reset your password</a></p>
-    <p>This link expires in 15 minutes.</p>
-  `;
+  const resetUrl = `${req.protocol}://${req.get(
+    "host"
+  )}/api/users/reset-password/${token}`;
 
-  try {
-    await sendEmail({
-      email: user.email,
-      subject: 'TSDC Password Reset Request',
-      message
-    });
-
-    res.status(200).json({
-      success: true,
-      message: 'Reset password email sent.',
-      resetUrl
-    });
-  } catch (error) {
-    console.error("Email sending error:", error);
-    user.resetPasswordToken = undefined;
-    user.resetPasswordExpire = undefined;
-    await user.save({ validateBeforeSave: false });
-
-    res.status(500).json({ success: false, message: 'Failed to send reset email.' });
-  }
-};
-
-// ================= RESET PASSWORD =================
-export const resetPassword = async (req, res) => {
-  const hashedToken = crypto.createHash('sha256').update(req.params.token).digest('hex');
-
-  const user = await User.findOne({
-    resetPasswordToken: hashedToken,
-    resetPasswordExpire: { $gt: Date.now() }
+  await sendEmail({
+    email: user.email,
+    subject: "Password Reset",
+    message: `<a href="${resetUrl}">Reset Password</a>`,
   });
 
-  if (!user) {
-    return res.status(400).json({ message: 'Invalid or expired token.' });
-  }
+  res.json({ success: true, message: "Reset email sent" });
+};
+
+export const resetPassword = async (req, res) => {
+  const hashed = crypto
+    .createHash("sha256")
+    .update(req.params.token)
+    .digest("hex");
+
+  const user = await User.findOne({
+    resetPasswordToken: hashed,
+    resetPasswordExpire: { $gt: Date.now() },
+  });
+
+  if (!user) return res.status(400).json({ error: "Invalid token" });
 
   user.password = req.body.password;
   user.resetPasswordToken = undefined;
   user.resetPasswordExpire = undefined;
   await user.save();
 
-  const token = generateToken(user._id);
-
-  res.status(200).json({
-    success: true,
-    token,
-    message: 'Password updated successfully.'
-  });
+  res.json({ success: true, message: "Password updated" });
 };
 
-// ================= GET REGISTRATION CATEGORIES =================
-export const getRegistrationCategories = async (req, res) => {
-  try {
-    const categories = await RegistrationCategory.find({});
-    res.status(200).json(categories);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch registration categories." });
-  }
+/* ================= MASTER DATA ================= */
+export const getRegistrationCategories = async (_req, res) => {
+  res.json(await RegistrationCategory.find({}));
 };
 
-// ================= GET NATIONALITIES =================
-export const getNationalities = async (req, res) => {
-  try {
-    const nationalities = await Nationality.find({});
-    res.status(200).json(nationalities);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch nationalities." });
-  }
-};
-
-
-export const getUserProfile = async (req, res) => {
-  try {
-    const basicUser = req.user;
-
-    if (!basicUser) {
-      return res.status(401).json({ error: "Unauthorized access" });
-    }
-
-    // 🔍 Try fetching the most recent registration application
-    const userApplication = await User.findOne({ basic_user_id: basicUser._id })
-      .populate("regcategory_id", "name")
-      .populate("nationality_id", "name")
-      .sort({ createdAt: -1 })
-      .lean();
-
-    let profileData = {};
-
-    if (userApplication) {
-      // ✅ Registered user: use data from User model
-      const formattedDOB = userApplication.dob
-        ? new Date(userApplication.dob).toLocaleDateString("en-GB")
-        : "N/A";
-
-      profileData = {
-        category: userApplication.regcategory_id?.name || "N/A",
-        membership_no:
-          userApplication.membership_id || "Pending Registration",
-        name_in_full: `${userApplication.f_name} ${
-          userApplication.m_name || ""
-        } ${userApplication.l_name}`,
-        gender: userApplication.gender || "N/A",
-        father_name: userApplication.father_name || "N/A",
-        mother_name: userApplication.mother_name || "N/A",
-        place_dob: `${userApplication.place || "N/A"}, ${formattedDOB}`,
-        nationality: userApplication.nationality_id?.name || "N/A",
-        address: userApplication.address || "N/A",
-        qualification_description:
-          userApplication.qualification_description ||
-          userApplication.regcategory_id?.name ||
-          "N/A",
-        email: userApplication.email || "N/A",
-        mobile_number: userApplication.mobile_number || "N/A",
-        aadhaar_number: userApplication.aadhaar_number || "N/A",
-        pan_number: userApplication.pan_number || "N/A",
-      };
-    } else {
-  const formattedDOB = basicUser.dob
-    ? new Date(basicUser.dob).toLocaleDateString('en-GB')
-    : 'N/A';
-
-  // ✅ Populate nationality name if exists
-  let nationalityName = 'N/A';
-  if (basicUser.nationality_id) {
-    const nationalityDoc = await mongoose.model('Nationality').findById(basicUser.nationality_id);
-    nationalityName = nationalityDoc?.name || 'N/A';
-  }
-
-  profileData = {
-    category: 'Pending Registration',
-    membership_no: 'N/A',
-    name_in_full: basicUser.name_in_full || basicUser.full_name || 'N/A',
-    gender: basicUser.gender || 'N/A',
-    father_name: basicUser.father_name || 'N/A',
-    mother_name: basicUser.mother_name || 'N/A',
-    place_dob: `${basicUser.place || 'N/A'}, ${formattedDOB}`,
-    nationality: nationalityName,
-    address: basicUser.address || 'N/A',
-    qualification_description: 'N/A',
-    email: basicUser.email || 'N/A',
-    mobile_number: basicUser.mobile_number || 'N/A',
-    aadhaar_number: basicUser.aadhaar_number || 'N/A',
-    pan_number: basicUser.pan_number || 'N/A',
-  };
-}
-
-
-    return res.status(200).json({
-      success: true,
-      data: profileData,
-    });
-  } catch (err) {
-    console.error("Profile Fetch Error:", err);
-    res.status(500).json({ success: false, error: err.message });
-  }
+export const getNationalities = async (_req, res) => {
+  res.json(await Nationality.find({}));
 };

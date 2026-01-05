@@ -1,8 +1,8 @@
 import express from 'express';
-import { registerUser, getProfile, getRegistrationCategories, getNationalities, logoutUser } from '../controllers/userController.js';
 import dynamicUpload from '../middlewares/dynamicUpload.js';
 import { protect } from '../middlewares/userAuth.js';
-import { getUserProfile } from '../controllers/userController.js';
+import { registerUser, getRegistrationCategories, getNationalities, logoutUser, getUserProfile } from '../controllers/userController.js';
+
 
 
 const router = express.Router();

@@ -14,43 +14,54 @@ import gscRoutes from './src/routes/gscRoutes.js';
 import nocRoutes from './src/routes/nocRoutes.js';
 import paymentRoutes from './src/routes/paymentRoutes.js';
 
+// ==================== PATH FIXES ====================
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// ==================== CONFIG ========================
 dotenv.config();
 
+// ==================== EXPRESS APP ===================
 const app = express();
+
+// ==================== MIDDLEWARE ====================
 app.use(cors());
 app.use(cookieParser());
 
-// --- FIX: DECLARE GLOBAL MIDDLEWARE FIRST ---
-// These will parse JSON and URL-encoded bodies for *all* routes
-// that don't have a more specific parser (like multer).
+// Global body parsers (JSON & URL-encoded)
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// --- NOW REGISTER YOUR ROUTES ---
-// The /api/users route will use its own multer middleware for /register
-// and these global parsers will be skipped for that specific request.
+// ==================== ROUTES ========================
 app.use('/api/users', userRoutes);
-
-// These routes will use the global express.json() parser
 app.use('/api/auth', authRoutes);
-app.use('/api/certificates', gscRoutes);
-app.use('/api/certificates', nocRoutes);
+app.use('/api/certificates/gsc', gscRoutes);
+app.use('/api/certificates/noc', nocRoutes);
 app.use('/api/payment', paymentRoutes);
 
-app.get('/', (req, res) =>
-  res.send('🎉 Telangana Dental Council API is Running..........!!!!')
-);
+// console.log("Key:", process.env.RAZORPAY_KEY_ID);
+// console.log("Secret:", process.env.RAZORPAY_SECRET);
+// console.log("Mongo URI:", process.env.MONGO_URI);
 
+
+// Health check endpoint
+app.get('/', (req, res) => {
+  res.send('🎉 Telangana Dental Council API is running...');
+});
+
+// ==================== START SERVER ==================
 const PORT = process.env.PORT || 5000;
 
 const startServer = async () => {
-  await connectDB();
-  app.listen(PORT, () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
-  });
+  try {
+    await connectDB();
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on http://localhost:${PORT}`);
+    });
+  } catch (err) {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  }
 };
 
 startServer();
