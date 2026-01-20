@@ -6,15 +6,21 @@ const sendEmail = async ({ email, subject, message }) => {
       process.env.ZEPTO_URL,
       {
         from: { address: process.env.ZEPTO_FROM },
-        to: [{ email_address: { address: email } }],
+        to: [
+          {
+            email_address: {
+              address: email,
+            },
+          },
+        ],
         subject,
-        htmlbody: message
+        htmlbody: message,
       },
       {
         headers: {
           "Content-Type": "application/json",
-          Authorization: process.env.ZEPTO_TOKEN
-        }
+          Authorization: process.env.ZEPTO_TOKEN, // ✅ NO double prefix
+        },
       }
     );
   } catch (error) {
