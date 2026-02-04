@@ -96,7 +96,7 @@ export const registerUser = async (req, res) => {
             uploadedFileUrls[field] = await uploadBufferToS3(
               file.buffer,
               file.originalname,
-              `registrations/${f_name}_${l_name}` // folder path
+              `registrations/${f_name}_${l_name}`, // folder path
             );
           }
         }
@@ -214,7 +214,7 @@ export const forgotPassword = async (req, res) => {
   await user.save({ validateBeforeSave: false });
 
   const resetUrl = `${req.protocol}://${req.get(
-    "host"
+    "host",
   )}/api/users/reset-password/${token}`;
 
   await sendEmail({
@@ -249,9 +249,29 @@ export const resetPassword = async (req, res) => {
 
 /* ================= MASTER DATA ================= */
 export const getRegistrationCategories = async (_req, res) => {
-  res.json(await RegistrationCategory.find({}));
+  try {
+    const categories = await RegistrationCategory.find({});
+    const formatted = categories.map((cat) => ({
+      _id: cat._id.toString(),
+      name: cat.name,
+    }));
+    res.json(formatted);
+  } catch (error) {
+    console.error("Error fetching categories:", error);
+    res.status(500).json({ error: "Failed to fetch categories" });
+  }
 };
 
 export const getNationalities = async (_req, res) => {
-  res.json(await Nationality.find({}));
+  try {
+    const nationalities = await Nationality.find({});
+    const formatted = nationalities.map((nat) => ({
+      _id: nat._id.toString(),
+      name: nat.name,
+    }));
+    res.json(formatted);
+  } catch (error) {
+    console.error("Error fetching nationalities:", error);
+    res.status(500).json({ error: "Failed to fetch nationalities" });
+  }
 };
