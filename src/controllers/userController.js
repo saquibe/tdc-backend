@@ -11,6 +11,7 @@ import User from "../models/User.js";
 import BasicUser from "../models/BasicUser.js";
 import sendEmail from "../utils/sendEmail.js";
 import { generateTemporaryId } from "../utils/generateTempID.js";
+import Payment from "../models/Payment.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,6 +25,8 @@ const generateToken = (id) =>
 /* ================= REGISTER USER ================= */
 export const registerUser = async (req, res) => {
   try {
+     console.log("📋 All cleaned form data fields:", Object.keys(req.cleanedFormData || {}));
+    console.log("📋 registrationCategory value:", req.cleanedFormData?.registrationCategory);
     const basicUser = req.user;
     if (!basicUser) {
       return res.status(401).json({ error: "Authentication failed" });
@@ -47,29 +50,39 @@ export const registerUser = async (req, res) => {
       aadhaar_number,
       regtype,
       gender,
+      payment_id,
+      order_id,
+      payment_status,
+      registrationCategory,
+      telephone_number,
     } = req.cleanedFormData;
 
-    if (
-      !nationality_id ||
-      !regcategory_id ||
-      !f_name ||
-      !l_name ||
-      !father_name ||
-      !mother_name ||
-      !place ||
-      !dob ||
-      !category ||
-      !address ||
-      !pan_number ||
-      !aadhaar_number ||
-      !email ||
-      !mobile_number ||
-      !regtype ||
-      !gender
-    ) {
-      return res.status(400).json({ error: "Missing required fields" });
+       console.log("✅ Extracted registrationCategory:", registrationCategory);
+
+    // Check if payment is completed
+    if (payment_status !== "completed" || !payment_id || !order_id) {
+      return res.status(400).json({ 
+        error: "Payment is required to complete registration" 
+      });
     }
 
+    // Verify payment exists and is successful
+    const payment = await Payment.findOne({
+      payment_id,
+      order_id,
+      basic_user_id: basicUser._id,
+      status: "paid",
+    });
+
+    if (!payment) {
+      return res.status(400).json({ 
+        error: "Valid payment not found. Please complete payment first." 
+      });
+    }
+
+      console.log("✅ Payment verified:", payment._id);
+
+    // Check for existing application
     const existing = await User.findOne({
       basic_user_id: basicUser._id,
       status: { $in: ["Pending", "Under Review"] },
@@ -79,32 +92,25 @@ export const registerUser = async (req, res) => {
       return res.status(409).json({ error: "Application already pending" });
     }
 
-    /* ===== FILE UPLOAD TO S3 ===== */
+    // Upload files to S3
     const uploadedFileUrls = {};
     if (req.fileBufferMap) {
       for (const [field, file] of Object.entries(req.fileBufferMap)) {
         if (path.extname(file.originalname).toLowerCase() !== ".pdf") {
           return res.status(400).json({ error: `${field} must be PDF` });
         }
-        if (req.fileBufferMap) {
-          for (const [field, file] of Object.entries(req.fileBufferMap)) {
-            if (path.extname(file.originalname).toLowerCase() !== ".pdf") {
-              return res.status(400).json({ error: `${field} must be PDF` });
-            }
 
-            // Upload file to S3 using v3 helper
-            uploadedFileUrls[field] = await uploadBufferToS3(
-              file.buffer,
-              file.originalname,
-              `registrations/${f_name}_${l_name}`, // folder path
-            );
-          }
-        }
+        uploadedFileUrls[field] = await uploadBufferToS3(
+          file.buffer,
+          file.originalname,
+          `registrations/${f_name}_${l_name}`,
+        );
       }
     }
 
     const temporary_id = generateTemporaryId("APP");
 
+    // Create application
     const application = await User.create({
       basic_user_id: basicUser._id,
       temporary_id,
@@ -126,9 +132,21 @@ export const registerUser = async (req, res) => {
       pan_number,
       aadhaar_number,
       regtype,
+      payment_id,
+      order_id,
+      registrationCategory,
+      telephone_number,
+      payment_status: "completed",
+      payment_amount: payment.amount,
       ...uploadedFileUrls,
     });
 
+    // Update payment with application reference
+    await Payment.findByIdAndUpdate(payment._id, {
+      $set: { user_id: application._id }
+    });
+
+    // Update basic user profile
     basicUser.name_in_full = `${f_name} ${m_name || ""} ${l_name}`.trim();
     basicUser.gender = gender;
     basicUser.place = place;
@@ -143,13 +161,30 @@ export const registerUser = async (req, res) => {
 
     await basicUser.save();
 
+    // Send confirmation email
+    await sendEmail({
+      email: email,
+      subject: "Registration Application Submitted",
+      message: `
+        <h2>Registration Application Submitted Successfully</h2>
+        <p>Dear ${f_name} ${l_name},</p>
+        <p>Your application for ${registrationCategory} has been submitted successfully.</p>
+        <p><strong>Application ID:</strong> ${temporary_id}</p>
+        <p><strong>Payment Reference:</strong> ${payment_id}</p>
+        <p><strong>Status:</strong> Pending Review</p>
+        <p>You will be notified once your application is reviewed.</p>
+      `,
+    });
+
     res.status(201).json({
       success: true,
-      message: "Registration submitted",
+      message: "Registration submitted successfully",
       data: {
         application_id: application._id,
         temporary_id,
+        payment_id,
         status: "Pending",
+        amount_paid: payment.amount,
       },
     });
   } catch (err) {

@@ -1,147 +1,326 @@
-import Payment from "../models/Payment.js";
-import User from "../models/User.js";
+// src/controllers/paymentController.js
 import Razorpay from "razorpay";
 import crypto from "crypto";
-import dotenv from "dotenv";
+import Payment from "../models/Payment.js";
+import RegistrationCategory from "../models/RegistrationCategory.js";
 
+// Initialize Razorpay as a function that returns the instance
+let razorpayInstance = null;
 
-dotenv.config();
-
-// ================= Razorpay Instance =================
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET, // Corrected variable name
-});
-
-// ====================================================
-// =============== CREATE PAYMENT ORDER ===============
-// ====================================================
-export const createPayment = async (req, res) => {
-  try {
-    const userId = req.user._id;
-
-    // 1️⃣ Fetch user with category
-    const user = await User.findById(userId).populate("regcategory_id");
-    if (!user) {
-      return res.status(404).json({ success: false, error: "User not found" });
-    }
-
-    const category = user.regcategory_id;
-    if (!category) {
-      return res.status(400).json({
-        success: false,
-        error: "User does not have a valid registration category",
-      });
-    }
-
-    // 2️⃣ Determine payment type + amount
-    const payment_type = user.regtype; // Regular / Tatkal
-    const payment_category = category.name;
-
-    let amount;
-    if (payment_type.toLowerCase().startsWith("regular")) {
-      amount = category.regular_amount;
-    } else if (payment_type.toLowerCase().startsWith("tatkal")) {
-      amount = category.tatkal_amount;
+const getRazorpayInstance = () => {
+  if (!razorpayInstance) {
+    console.log("🔧 Initializing Razorpay...");
+    console.log("Key ID:", process.env.RAZORPAY_KEY_ID ? "✅ Set" : "❌ Missing");
+    
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+      console.error("❌ RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET is missing!");
+      console.error("Please check your .env file");
+      
+      // For development/testing, create a mock instance
+      if (process.env.NODE_ENV === 'development') {
+        console.log("⚠️  Creating mock Razorpay for development");
+        razorpayInstance = {
+          orders: {
+            create: async (options) => {
+              console.log("📝 Mock Razorpay - Creating order:", options);
+              return {
+                id: `mock_order_${Date.now()}`,
+                amount: options.amount,
+                currency: options.currency,
+                receipt: options.receipt,
+                status: 'created',
+                created_at: Math.floor(Date.now() / 1000)
+              };
+            }
+          },
+          payments: {
+            fetch: async (paymentId) => {
+              console.log("📝 Mock Razorpay - Fetching payment:", paymentId);
+              return {
+                id: paymentId,
+                status: 'captured',
+                method: 'card',
+                bank: 'TEST BANK',
+                wallet: null,
+                vpa: null,
+                email: 'test@example.com',
+                contact: '9999999999',
+                fee: 0,
+                tax: 0,
+                created_at: Math.floor(Date.now() / 1000)
+              };
+            }
+          }
+        };
+      } else {
+        throw new Error("Razorpay credentials are required for production");
+      }
     } else {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid registration type",
+      // Real Razorpay initialization
+      razorpayInstance = new Razorpay({
+        key_id: process.env.RAZORPAY_KEY_ID,
+        key_secret: process.env.RAZORPAY_KEY_SECRET,
       });
+      console.log("✅ Razorpay initialized successfully");
+    }
+  }
+  return razorpayInstance;
+};
+
+// Create Razorpay Order
+export const createOrder = async (req, res) => {
+  try {
+    const { amount, currency = "INR", notes = {} } = req.body;
+    const basicUser = req.user;
+
+    if (!amount || amount < 1) {
+      return res.status(400).json({ error: "Invalid amount" });
     }
 
-    // 3️⃣ Create Razorpay Order (amount in paise)
-    const razorpayOrder = await razorpay.orders.create({
-      amount: amount * 100, // INR → paise
-      currency: "INR",
+    // Get Razorpay instance
+    const razorpay = getRazorpayInstance();
+
+    // Calculate amount in paise (Razorpay expects amount in smallest currency unit)
+    const amountInPaise = Math.round(amount * 100);
+
+    const options = {
+      amount: amountInPaise,
+      currency,
       receipt: `receipt_${Date.now()}`,
-      payment_capture: 1,
-    });
+      notes: {
+        basic_user_id: basicUser._id.toString(),
+        ...notes,
+      },
+    };
 
-    // 4️⃣ Save payment record (PENDING)
-    const payment = new Payment({
-      user_id: user._id,
-      payment_category,
-      payment_type,
-      amount,
-      order_id: razorpayOrder.id,
-      payment_status: "Pending",
-    });
+    // Create order in Razorpay
+    const order = await razorpay.orders.create(options);
 
-    await payment.save();
-
-    // 5️⃣ Send data to frontend
-    return res.status(201).json({
-      success: true,
-      message: "Razorpay order created",
-      data: {
-        key: process.env.RAZORPAY_KEY_ID,
-        order_id: razorpayOrder.id,
-        amount: razorpayOrder.amount,
-        currency: razorpayOrder.currency,
-        user: {
-          name: user.full_name || `${user.f_name} ${user.l_name}`,
-          email: user.email,
-          contact: user.mobile_number || user.mobile,
-        },
+    // Save payment record in database
+    const payment = await Payment.create({
+      basic_user_id: basicUser._id,
+      order_id: order.id,
+      amount: amount,
+      currency,
+      status: "created",
+      notes: {
+        registration_category: notes.registration_category,
+        application_type: notes.application_type || "New Registration",
       },
     });
+
+    console.log("📦 Order created:", order.id, "for user:", basicUser._id);
+
+    res.status(201).json({
+      success: true,
+      message: "Order created successfully",
+      order: {
+        id: order.id,
+        amount: order.amount,
+        currency: order.currency,
+        receipt: order.receipt,
+      },
+      payment_id: payment._id,
+    });
   } catch (error) {
-    console.error("Payment creation error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
+    console.error("❌ Order creation error:", error);
+    res.status(500).json({ 
+      error: "Failed to create order",
+      details: error.message,
+      env_check: {
+        razorpay_key_set: !!process.env.RAZORPAY_KEY_ID,
+        node_env: process.env.NODE_ENV
+      }
     });
   }
 };
 
-// ====================================================
-// =============== VERIFY PAYMENT =====================
-// ====================================================
+// Verify Payment
 export const verifyPayment = async (req, res) => {
   try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+    } = req.body;
 
-    // 1️⃣ Signature verification
-    const generatedSignature = crypto
-      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET) // Corrected variable name
-      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-      .digest("hex");
+    const basicUser = req.user;
 
-    if (generatedSignature !== razorpay_signature) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid payment signature",
+    // Get Razorpay instance
+    const razorpay = getRazorpayInstance();
+
+    // Check if this is a mock payment
+    if (razorpay_order_id && razorpay_order_id.startsWith('mock_')) {
+      console.log("⚠️  Processing mock payment verification");
+      
+      const updatedPayment = await Payment.findOneAndUpdate(
+        { order_id: razorpay_order_id, basic_user_id: basicUser._id },
+        {
+          payment_id: razorpay_payment_id || `mock_payment_${Date.now()}`,
+          status: "paid",
+          payment_method: "card",
+          razorpay_response: { 
+            mock: true,
+            order_id: razorpay_order_id,
+            payment_id: razorpay_payment_id
+          },
+        },
+        { new: true }
+      );
+
+      if (!updatedPayment) {
+        return res.status(404).json({ error: "Payment record not found" });
+      }
+
+      return res.json({
+        success: true,
+        message: "Mock payment verified successfully",
+        payment: {
+          id: updatedPayment._id,
+          order_id: updatedPayment.order_id,
+          payment_id: updatedPayment.payment_id,
+          amount: updatedPayment.amount,
+          status: updatedPayment.status,
+          currency: updatedPayment.currency,
+        },
       });
     }
 
-    // 2️⃣ Update payment record
-    const payment = await Payment.findOneAndUpdate(
-      { order_id: razorpay_order_id },
+    // Real payment verification
+    const body = razorpay_order_id + "|" + razorpay_payment_id;
+    const expectedSignature = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .update(body.toString())
+      .digest("hex");
+
+    if (expectedSignature !== razorpay_signature) {
+      console.error("❌ Invalid signature for order:", razorpay_order_id);
+      return res.status(400).json({ error: "Invalid signature" });
+    }
+
+    // Fetch payment details from Razorpay
+    const payment = await razorpay.payments.fetch(razorpay_payment_id);
+
+    // Update payment record in database
+    const updatedPayment = await Payment.findOneAndUpdate(
+      { order_id: razorpay_order_id, basic_user_id: basicUser._id },
       {
         payment_id: razorpay_payment_id,
-        payment_status: "Success",
+        status: payment.status === "captured" ? "paid" : payment.status,
+        payment_method: payment.method,
+        bank: payment.bank,
+        wallet: payment.wallet,
+        vpa: payment.vpa,
+        email: payment.email,
+        contact: payment.contact,
+        fee: payment.fee ? payment.fee / 100 : 0,
+        tax: payment.tax ? payment.tax / 100 : 0,
+        razorpay_response: payment,
       },
       { new: true }
     );
 
-    if (!payment) {
-      return res.status(404).json({
-        success: false,
-        error: "Payment record not found",
-      });
+    if (!updatedPayment) {
+      return res.status(404).json({ error: "Payment record not found" });
     }
 
-    return res.status(200).json({
+    console.log("✅ Payment verified:", razorpay_payment_id);
+
+    res.json({
       success: true,
       message: "Payment verified successfully",
-      data: payment,
+      payment: {
+        id: updatedPayment._id,
+        order_id: updatedPayment.order_id,
+        payment_id: updatedPayment.payment_id,
+        amount: updatedPayment.amount,
+        status: updatedPayment.status,
+        currency: updatedPayment.currency,
+      },
     });
   } catch (error) {
-    console.error("Payment verification error:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
+    console.error("❌ Payment verification error:", error);
+    res.status(500).json({ 
+      error: "Payment verification failed",
+      details: error.message 
     });
+  }
+};
+
+// Get Payment Status
+export const getPaymentStatus = async (req, res) => {
+  try {
+    const { order_id } = req.params;
+    const basicUser = req.user;
+
+    const payment = await Payment.findOne({
+      order_id,
+      basic_user_id: basicUser._id,
+    });
+
+    if (!payment) {
+      return res.status(404).json({ error: "Payment not found" });
+    }
+
+    res.json({
+      success: true,
+      payment: {
+        id: payment._id,
+        order_id: payment.order_id,
+        payment_id: payment.payment_id,
+        amount: payment.amount,
+        status: payment.status,
+        currency: payment.currency,
+        created_at: payment.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error("Get payment status error:", error);
+    res.status(500).json({ error: "Failed to get payment status" });
+  }
+};
+
+// Calculate Registration Fee
+export const calculateFee = async (req, res) => {
+  try {
+    const { registration_category, registration_type } = req.body;
+
+    if (!registration_category || !registration_type) {
+      return res.status(400).json({ error: "Missing required parameters" });
+    }
+
+    const category = await RegistrationCategory.findOne({
+      name: registration_category,
+    });
+
+    if (!category) {
+      return res.status(404).json({ error: "Registration category not found" });
+    }
+
+    let amount = 0;
+    const isTatkal = registration_type.includes("Tatkal");
+
+    if (isTatkal) {
+      amount = category.tatkal_amount;
+    } else {
+      amount = category.regular_amount;
+    }
+
+    // Add GST if applicable (18%)
+    const gst = Math.round(amount * 0.18);
+    const totalAmount = amount + gst;
+
+    res.json({
+      success: true,
+      fee_breakdown: {
+        registration_fee: amount,
+        gst: gst,
+        total_amount: totalAmount,
+      },
+      currency: "INR",
+    });
+  } catch (error) {
+    console.error("Fee calculation error:", error);
+    res.status(500).json({ error: "Failed to calculate fee" });
   }
 };

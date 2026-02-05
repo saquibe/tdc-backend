@@ -1,47 +1,74 @@
-import mongoose from 'mongoose';
-const { Schema } = mongoose;
+// models/Payment.js
+import mongoose from "mongoose";
 
-
-const paymentSchema = new Schema({
-  // Reference to the user
+const paymentSchema = new mongoose.Schema({
   user_id: {
-    type: Schema.Types.ObjectId,
-    ref: 'User',
-    required: [true, 'User ID is required']
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: false,
   },
-
-  // Registration Category Name (from RegistrationCategory.name)
-  payment_category: {
-    type: String,
-    required: [true, 'Registration category name is required']
+  basic_user_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "BasicUser",
+    required: true,
   },
-
-  // Payment Type (fetched from User.regtype)
-  payment_type: {
-    type: String,
-    required: [true, 'Payment type must be either { Regular (By Post - Fee includes postal charges) or Tatkal (By Hand) }']
-  },
-
-  // Amount fetched from RegistrationCategory based on type
-  amount: {
-    type: Number,
-    required: [true, 'Amount is required']
-  },
-
-  // Stripe Payment Intent ID
-  stripe_id: {
-    type: String,
-    required: [true, 'Stripe ID is required']
-  },
-
-  // Custom or Stripe order ID
   order_id: {
     type: String,
-    required: [true, 'Order ID is required'],
-    unique: true
-  }
+    required: true,
+    unique: true,
+  },
+  payment_id: {
+    type: String,
+    unique: true,
+    sparse: true,
+  },
+  amount: {
+    type: Number,
+    required: true,
+  },
+  currency: {
+    type: String,
+    default: "INR",
+  },
+  status: {
+    type: String,
+    enum: ["created", "attempted", "paid", "failed", "refunded"],
+    default: "created",
+  },
+  payment_method: String,
+  bank: String,
+  wallet: String,
+  vpa: String,
+  email: String,
+  contact: String,
+  fee: Number,
+  tax: Number,
+  error_code: String,
+  error_description: String,
+  notes: {
+    registration_category: String,
+    application_type: String,
+    temporary_id: String,
+  },
+  razorpay_response: Object,
+  refunds: [
+    {
+      refund_id: String,
+      amount: Number,
+      status: String,
+      created_at: Date,
+    },
+  ],
+  metadata: Object,
+}, {
+  timestamps: true,
+});
 
-}, { timestamps: true });
+// Indexes
+paymentSchema.index({ order_id: 1 });
+paymentSchema.index({ payment_id: 1 });
+paymentSchema.index({ user_id: 1, status: 1 });
+paymentSchema.index({ created_at: -1 });
 
-const Payment = mongoose.model('Payment', paymentSchema);
+const Payment = mongoose.model("Payment", paymentSchema);
 export default Payment;

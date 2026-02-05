@@ -1,3 +1,5 @@
+// src/middlewares/userAuth.js
+
 import jwt from 'jsonwebtoken';
 import BasicUser from '../models/BasicUser.js';
 

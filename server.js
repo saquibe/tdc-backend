@@ -37,7 +37,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/certificates/gsc', gscRoutes);
 app.use('/api/certificates/noc', nocRoutes);
-app.use('/api/payment', paymentRoutes);
+app.use("/api/payments", paymentRoutes);
 
 // console.log("Key:", process.env.RAZORPAY_KEY_ID);
 // console.log("Secret:", process.env.RAZORPAY_SECRET);
